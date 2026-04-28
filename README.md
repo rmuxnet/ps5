@@ -1,5 +1,16 @@
 # ps5-linux-patches
 
+## Compile
+
+```bash
+git clone https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
+cd linux
+git checkout tags/v7.0.2
+git apply ~/ps5-linux-patches/linux.patch
+cp ~/ps5-linux-patches/.config .config
+make -j16
+```
+
 ## TODO
 
 - amdgpu smu driver to show correct gpu frequency and temperature

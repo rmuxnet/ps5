@@ -424,6 +424,21 @@ index 53fbd2e0acdd..d36c1909e0e6 100644
  obj-$(CONFIG_S390)		+= s390/
 +
 +obj-$(CONFIG_X86_PS5)		+= ps5/
+diff --git a/drivers/gpu/drm/amd/amdgpu/amdgpu.h b/drivers/gpu/drm/amd/amdgpu/amdgpu.h
+index 447e734c362b..c52c81e084a7 100644
+--- a/drivers/gpu/drm/amd/amdgpu/amdgpu.h
++++ b/drivers/gpu/drm/amd/amdgpu/amdgpu.h
+@@ -271,6 +271,10 @@ extern int amdgpu_user_queue;
+ 
+ extern uint amdgpu_hdmi_hpd_debounce_delay_ms;
+ 
++#ifdef CONFIG_X86_PS5
++extern int amdgpu_force_1080p;
++#endif
++
+ #define AMDGPU_VM_MAX_NUM_CTX			4096
+ #define AMDGPU_SG_THRESHOLD			(256*1024*1024)
+ #define AMDGPU_WAIT_IDLE_TIMEOUT_IN_MS	        3000
 diff --git a/drivers/gpu/drm/amd/amdgpu/amdgpu_bios.c b/drivers/gpu/drm/amd/amdgpu/amdgpu_bios.c
 index 35d04e69aec0..314ceaaaab9f 100644
 --- a/drivers/gpu/drm/amd/amdgpu/amdgpu_bios.c
@@ -505,10 +520,23 @@ index af3d2fd61cf3..c31152f5a158 100644
  		break;
  	default:
 diff --git a/drivers/gpu/drm/amd/amdgpu/amdgpu_drv.c b/drivers/gpu/drm/amd/amdgpu/amdgpu_drv.c
-index c91638e65174..0476faeeae74 100644
+index c91638e65174..c9e4bd5dee98 100644
 --- a/drivers/gpu/drm/amd/amdgpu/amdgpu_drv.c
 +++ b/drivers/gpu/drm/amd/amdgpu/amdgpu_drv.c
-@@ -2179,6 +2179,7 @@ static const struct pci_device_id pciidlist[] = {
+@@ -1134,6 +1134,12 @@ module_param_named(user_queue, amdgpu_user_queue, int, 0444);
+ MODULE_PARM_DESC(hdmi_hpd_debounce_delay_ms, "HDMI HPD disconnect debounce delay in milliseconds (0 to disable (by default), 1500 is common)");
+ module_param_named(hdmi_hpd_debounce_delay_ms, amdgpu_hdmi_hpd_debounce_delay_ms, uint, 0644);
+ 
++#ifdef CONFIG_X86_PS5
++int amdgpu_force_1080p = 0;
++MODULE_PARM_DESC(force_1080p, "Force 1080p (0 = disabled (default), 1 = enabled)");
++module_param_named(force_1080p, amdgpu_force_1080p, int, 0444);
++#endif
++
+ /* These devices are not supported by amdgpu.
+  * They are supported by the mach64, r128, radeon drivers
+  */
+@@ -2179,6 +2185,7 @@ static const struct pci_device_id pciidlist[] = {
  	{0x1002, 0x7410, PCI_ANY_ID, PCI_ANY_ID, 0, 0, CHIP_ALDEBARAN},
  
  	/* CYAN_SKILLFISH */
@@ -682,7 +710,7 @@ index e3a035c9fece..6eb67dd7b52c 100644
  	if (r)
  		return r;
 diff --git a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c
-index 2328c1aa0ead..02bd417defa2 100644
+index 2328c1aa0ead..824cab06abb1 100644
 --- a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c
 +++ b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c
 @@ -3003,7 +3003,10 @@ static int dm_hw_init(struct amdgpu_ip_block *ip_block)
@@ -720,18 +748,21 @@ index 2328c1aa0ead..02bd417defa2 100644
  }
  
  static void fill_audio_info(struct audio_info *audio_info,
-@@ -8181,6 +8193,20 @@ create_validate_stream_for_sink(struct drm_connector *connector,
+@@ -8181,6 +8193,23 @@ create_validate_stream_for_sink(struct drm_connector *connector,
  	return stream;
  }
  
 +#ifdef CONFIG_X86_PS5
 +static bool is_ps5_supported(const struct drm_display_mode *mode)
 +{
++	if (amdgpu_force_1080p)
++		return mode->clock == 148500;
++
 +	switch (mode->clock) {
-+	case 148500:
-+	case 241500:
-+	case 241700:
-+	case 594000:
++	case 148500: /* 1080p60 */
++	case 241500: /* 1440p60 */
++	case 241700: /* 1440p60 */
++	case 594000: /* 2160p60 */
 +		return true;
 +	}
 +	return false;
@@ -741,7 +772,7 @@ index 2328c1aa0ead..02bd417defa2 100644
  enum drm_mode_status amdgpu_dm_connector_mode_valid(struct drm_connector *connector,
  				   const struct drm_display_mode *mode)
  {
-@@ -8194,6 +8220,11 @@ enum drm_mode_status amdgpu_dm_connector_mode_valid(struct drm_connector *connec
+@@ -8194,6 +8223,11 @@ enum drm_mode_status amdgpu_dm_connector_mode_valid(struct drm_connector *connec
  	 */
  	struct amdgpu_dm_connector *aconnector = to_amdgpu_dm_connector(connector);
  
