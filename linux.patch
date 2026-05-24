@@ -4508,7 +4508,7 @@ index 000000000000..d2c25e461bf7
 +#endif /* _AUTOSERVO_PARAM_H */
 diff --git a/drivers/ps5/hdmi.c b/drivers/ps5/hdmi.c
 new file mode 100644
-index 000000000000..c0c8fee534cc
+index 000000000000..fc2912853e54
 --- /dev/null
 +++ b/drivers/ps5/hdmi.c
 @@ -0,0 +1,1234 @@
@@ -5036,8 +5036,8 @@ index 000000000000..c0c8fee534cc
 +
 +void hdmiSystemResume(void)
 +{
-+	sceSetBackToUnpluggedSequence();
-+	sceSetBackToWaitResolutionSequence();
++	// sceSetBackToUnpluggedSequence();
++	// sceSetBackToWaitResolutionSequence();
 +	if (hdmi_ic_type == HDMI_IC_TYPE_FLAVA3) {
 +		// i2c_cmd_4_2();
 +		// sceSetHdcpSequence1st();
@@ -5279,7 +5279,7 @@ index 000000000000..c0c8fee534cc
 +
 +	i2c_init(1);
 +	i2c_mask(0x7021, 0x00, 0xf0);
-+	i2c_delay(300);
++	i2c_delay(500);
 +	i2c_begin_block();
 +	i2c_write(0x100c, 0x01);
 +	i2c_write_data(0x68a0, (u8[]){0x96, 0x04}, 2);
@@ -5380,7 +5380,7 @@ index 000000000000..c0c8fee534cc
 +	i2c_write(0x700a, 0x02);
 +	i2c_write(0x705f, 0x80);
 +	i2c_end_block();
-+	i2c_delay(500);
++	i2c_delay(700);
 +	i2c_write(0x7a8b, 0x00);
 +	i2c_cmd_5_3(0x01);
 +	i2c_exec();
