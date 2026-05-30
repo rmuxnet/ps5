@@ -5202,10 +5202,10 @@ index 000000000000..d2c25e461bf7
 +#endif /* _AUTOSERVO_PARAM_H */
 diff --git a/drivers/ps5/hdmi.c b/drivers/ps5/hdmi.c
 new file mode 100644
-index 000000000000..81cc3b99d7e2
+index 000000000000..8f094490d677
 --- /dev/null
 +++ b/drivers/ps5/hdmi.c
-@@ -0,0 +1,1226 @@
+@@ -0,0 +1,1237 @@
 +#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 +
 +#include <linux/module.h>
@@ -6355,6 +6355,16 @@ index 000000000000..81cc3b99d7e2
 +}
 +EXPORT_SYMBOL(sceHdmiSetAudioMute);
 +
++void sceHdmiOutputMode(void)
++{
++	i2c_init(4);
++	if (hdmi_ic_type == HDMI_IC_TYPE_FLAVA3) {
++		i2c_write(0x7005, 0x80);
++	}
++	i2c_exec();
++}
++EXPORT_SYMBOL(sceHdmiOutputMode);
++
 +int getHdmiConfiguration(void)
 +{
 +	u8 buf[ICC_MSG_MAX_SIZE] = {};
@@ -6429,6 +6439,7 @@ index 000000000000..81cc3b99d7e2
 +			fix_edid(&msg->data[4]);
 +			real_edid = drm_edid_alloc(&msg->data[4], *(u16 *)&msg->data[2]);
 +			pr_info("got real edid\n");
++			sceHdmiOutputMode();
 +		}
 +}
 +EXPORT_SYMBOL(hdmi_notification_handler);
@@ -6928,10 +6939,10 @@ index 000000000000..4af890c842a7
 +MODULE_LICENSE("GPL");
 diff --git a/drivers/ps5/spcie.c b/drivers/ps5/spcie.c
 new file mode 100644
-index 000000000000..13337f7a0db9
+index 000000000000..e02c074ee0b1
 --- /dev/null
 +++ b/drivers/ps5/spcie.c
-@@ -0,0 +1,1120 @@
+@@ -0,0 +1,1149 @@
 +#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 +
 +#include <linux/module.h>
@@ -6941,6 +6952,7 @@ index 000000000000..13337f7a0db9
 +#include <linux/ps5.h>
 +#include <linux/dmi.h>
 +#include <linux/delay.h>
++#include <linux/kfifo.h>
 +#include "autoservo_param.h"
 +
 +#define PCI_DEVICE_ID_SPCIE	0x9107
@@ -7015,6 +7027,16 @@ index 000000000000..13337f7a0db9
 +	void __iomem *bar2;
 +	void __iomem *pervasive0;
 +};
++
++struct icc_notification {
++	u8 service_id;
++	u8 notification[ICC_MSG_MAX_SIZE];
++};
++
++#define ICC_NOTIFICATION_FIFO_SIZE 32
++static DEFINE_KFIFO(icc_notification_fifo, struct icc_notification, ICC_NOTIFICATION_FIFO_SIZE);
++static DEFINE_SPINLOCK(icc_notification_lock);
++static struct work_struct icc_notification_work;
 +
 +static struct spcie_dev *sdev;
 +static struct spcie_icc_dev *icc_dev;
@@ -7099,14 +7121,10 @@ index 000000000000..13337f7a0db9
 +
 +	icc_send(query);
 +
-+	ret = wait_event_interruptible_timeout(icc_dev->wq, icc_dev->reply_ready,
++	ret = wait_event_timeout(icc_dev->wq, icc_dev->reply_ready,
 +		msecs_to_jiffies(ICC_TIMEOUT_MSECS));
 +	if (ret == 0) {
 +		dev_err(&icc_dev->pdev->dev, "timeout\n");
-+		mutex_unlock(&icc_dev->lock);
-+		return -ETIMEDOUT;
-+	} else if (ret < 0) {
-+		dev_err(&icc_dev->pdev->dev, "interrupted\n");
 +		mutex_unlock(&icc_dev->lock);
 +		return -ETIMEDOUT;
 +	}
@@ -7575,18 +7593,38 @@ index 000000000000..13337f7a0db9
 +	}
 +}
 +
-+static int icc_notification_handler(u8 service_id, u8 *buf)
++static void icc_notification_work_func(struct work_struct *work)
 +{
-+	struct icc_msg *msg = (struct icc_msg *)buf;
++	struct icc_msg *msg;
++	struct icc_notification entry;
 +
-+	if (service_id == ICC_SERVICE_ID_HDMI) {
-+		hdmi_notification_handler(msg);
-+	} else if (service_id == ICC_SERVICE_ID_BUTTON) {
-+		button_notification_handler(msg);
++	while (kfifo_out_spinlocked(&icc_notification_fifo, &entry, 1, &icc_notification_lock)) {
++		msg = (struct icc_msg *)entry.notification;
++		if (entry.service_id == ICC_SERVICE_ID_HDMI) {
++			hdmi_notification_handler(msg);
++		} else if (entry.service_id == ICC_SERVICE_ID_BUTTON) {
++			button_notification_handler(msg);
++		} else {
++			pr_info("service id: %x\n", entry.service_id);
++			print_hex_dump(KERN_INFO, "event: ", DUMP_PREFIX_OFFSET, 16, 1,
++				msg->data, msg->length - sizeof(*msg), true);
++		}
++
++	}
++}
++
++static int icc_notification_handler(u8 service_id, u8 *notification)
++{
++	struct icc_msg *msg = (struct icc_msg *)notification;
++	struct icc_notification entry;
++
++	entry.service_id = service_id;
++	memcpy(entry.notification, msg, msg->length);
++
++	if (kfifo_in_spinlocked(&icc_notification_fifo, &entry, 1, &icc_notification_lock)) {
++		schedule_work(&icc_notification_work);
 +	} else {
-+		pr_info("service id: %x\n", service_id);
-+		print_hex_dump(KERN_INFO, "event: ", DUMP_PREFIX_OFFSET, 16, 1,
-+			msg->data, msg->length - sizeof(*msg), true);
++		pr_warn_ratelimited("icc notification buffer full\n");
 +	}
 +
 +	return 0;
@@ -7629,7 +7667,7 @@ index 000000000000..13337f7a0db9
 +				writel(ICC_ACK, icc_dev->icc_doorbell_base + ICC_REG_DOORBELL);
 +
 +				icc_dev->reply_ready = true;
-+				wake_up_interruptible(&icc_dev->wq);
++				wake_up(&icc_dev->wq);
 +			} else {
 +				dev_err(&icc_dev->pdev->dev, "unknown query\n");
 +			}
@@ -7698,6 +7736,8 @@ index 000000000000..13337f7a0db9
 +	icc_dev->sdev = sdev;
 +
 +	sdev->icc_dev = icc_dev;
++
++	INIT_WORK(&icc_notification_work, icc_notification_work_func);
 +
 +	mutex_init(&icc_dev->lock);
 +	init_waitqueue_head(&icc_dev->wq);
@@ -8377,10 +8417,10 @@ index 2eedf44e6801..2785a47665be 100644
  extern void dmi_setup(void);
 diff --git a/include/linux/ps5.h b/include/linux/ps5.h
 new file mode 100644
-index 000000000000..ed03edcab7c5
+index 000000000000..4020a0b0c61c
 --- /dev/null
 +++ b/include/linux/ps5.h
-@@ -0,0 +1,92 @@
+@@ -0,0 +1,93 @@
 +#ifndef _LINUX_PS5_H
 +#define _LINUX_PS5_H
 +
@@ -8439,6 +8479,7 @@ index 000000000000..ed03edcab7c5
 +void sceHdmiSetAudioConfig(int channels);
 +void sceHdmiDeviceSetVideoMute(int mute);
 +void sceHdmiSetAudioMute(int mute);
++void sceHdmiOutputMode(void);
 +int getHdmiConfiguration(void);
 +bool isHdmiModeValid(const struct drm_display_mode *mode, int force_1080p);
 +
