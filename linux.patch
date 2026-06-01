@@ -1867,7 +1867,7 @@ new file mode 100644
 index 000000000000..e846b6b0edbc
 --- /dev/null
 +++ b/drivers/net/phy/mts/mts.h
-@@ -0,0 +1,181 @@
+@@ -0,0 +1,186 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * PlayStation 5 Gigabit Ethernet driver
@@ -1938,6 +1938,11 @@ index 000000000000..e846b6b0edbc
 +#define GBE_ERR_RX_PCODE	0x400
 +
 +#define GBE_COAL_VAL		0x10001388
++
++/* this chip has no intx pin and its msi sometimes never fires (cold boot). when
++ * we detect that, the link_poll work becomes the only way to service the rings,
++ * so it polls this often (ms) instead of once a second to stay responsive. */
++#define GBE_POLL_FALLBACK_MS	10
 +
 +/* excludes bit2 (LINK) - polling link state avoids IRQ storm from autoneg pulses */
 +#define GBE_IER_MASK		0x5014fa
@@ -2054,7 +2059,7 @@ new file mode 100644
 index 000000000000..4250a25d7260
 --- /dev/null
 +++ b/drivers/net/phy/mts/mts_main.c
-@@ -0,0 +1,810 @@
+@@ -0,0 +1,823 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * PlayStation 5 Gigabit Ethernet driver
@@ -2529,26 +2534,32 @@ index 000000000000..4250a25d7260
 +{
 +	struct gbe_priv *p = container_of(to_delayed_work(work),
 +					  struct gbe_priv, link_poll);
++	unsigned long delay = HZ;
 +
 +	gbe_link_change(p);
 +
 +	/*
 +	 * on a cold boot the chip sometimes just never fires its first irq and
-+	 * napi sits there doing nothing. if the irq count hasnt moved since last tick,
-+	 * we kick it by hand and re-arm the mask.
++	 * napi sits there doing nothing. if the irq count hasnt moved since last
++	 * tick the msi is dead -- kick napi by hand and re-arm the mask. msi is the
++	 * only irq source (no intx pin), so while it stays dead we keep polling fast
++	 * (GBE_POLL_FALLBACK_MS) instead of once a second, or interactive rx lags by
++	 * up to a second. as soon as real irqs start arriving we drop back to HZ.
 +	 */
 +	if (netif_running(p->netdev) && p->cnt_irq == p->irq_watchdog) {
 +		napi_schedule(&p->napi);
 +		gbe_wr(p, GBE_REG_IER, GBE_IER_MASK);
++		delay = max_t(unsigned long, 1, msecs_to_jiffies(GBE_POLL_FALLBACK_MS));
 +	}
 +	p->irq_watchdog = p->cnt_irq;
 +
-+	if (++p->poll_tick >= 10) {
++	/* dump stats roughly every 10s regardless of the current poll cadence */
++	if (++p->poll_tick >= 10 * HZ / delay) {
 +		gbe_dump_stats(p);
 +		p->poll_tick = 0;
 +	}
 +
-+	schedule_delayed_work(&p->link_poll, HZ);
++	schedule_delayed_work(&p->link_poll, delay);
 +}
 +
 +/*
@@ -2596,11 +2607,18 @@ index 000000000000..4250a25d7260
 +	rx_done = gbe_rx_poll(p, budget);
 +
 +	if (rx_done < budget) {
++		u32 isr;
++
 +		napi_complete_done(napi, rx_done);
 +		gbe_wr(p, GBE_REG_IER, GBE_IER_MASK);
 +		/* chip wont send a fresh msi for stuff that landed while ier was
-+		   off, so re-check isr and re-kick or interrupts just freeze */
-+		if (gbe_rd(p, GBE_REG_ISR) & GBE_IER_MASK) {
++		   off, so re-check isr and re-kick or interrupts just freeze.
++		   ACK the causes (W1C) first: otherwise a latched/undelivered
++		   cause (the msi-silent cold-boot case) keeps this condition
++		   permanently true and spins napi at ~30k polls/s, pinning a cpu. */
++		isr = gbe_rd(p, GBE_REG_ISR) & GBE_IER_MASK;
++		if (isr) {
++			gbe_wr(p, GBE_REG_ISR, isr);
 +			if (napi_schedule_prep(&p->napi)) {
 +				gbe_wr(p, GBE_REG_IER, 0);
 +				__napi_schedule(&p->napi);
