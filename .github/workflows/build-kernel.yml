@@ -29,6 +29,11 @@ jobs:
       CCACHE_DIR: /home/opc/ccache
 
     steps:
+      - name: Clean image workspace
+        # Docker containers write to image/linux-bin/ as root; actions/checkout's
+        # git clean runs as the runner user and skips root-owned files, so stale
+        # .deb / .pkg.tar.zst from prior kernel versions leak into the release.
+        run: sudo rm -rf image
       - name: Checkout image builder
         uses: actions/checkout@v6
         with:
@@ -43,17 +48,15 @@ jobs:
           bash image/build_image.sh --kernel-only \
             --distro "$FORMAT" \
             --patches-ref "$PATCHES_REF"
-          # build_image.sh's --distro all skips the rpm packager, and each
-          # kernel-build call wipes image/linux-bin/. Stash the deb + pkg.tar.zst
-          # from the "all" run before firing the rpm-producing "fedora" run,
-          # then restore so the release ships all three formats.
+          # --distro all skips the rpm packager. Call the packager container
+          # directly against the already-staged kernel (image/linux-bin/staging/)
+          # instead of re-running build_image.sh, which wipes outputs and
+          # rebuilds the kernel — that doubled CI time. This step is ~1 minute.
           if [ "$FORMAT" = "all" ]; then
-            mkdir -p /tmp/kernel-stash
-            cp image/linux-bin/*.deb image/linux-bin/*.pkg.tar.zst /tmp/kernel-stash/
-            bash image/build_image.sh --kernel-only \
-              --distro fedora \
-              --patches-ref "$PATCHES_REF"
-            cp /tmp/kernel-stash/*.deb /tmp/kernel-stash/*.pkg.tar.zst image/linux-bin/
+            docker build -t ps5-kernel-packager-rpm \
+              -f image/docker/kernel-builder-rpm/Dockerfile image/
+            docker run --rm -v "$PWD/image/linux-bin":/out \
+              ps5-kernel-packager-rpm
           fi
 
       - name: Read kernel and patches version
