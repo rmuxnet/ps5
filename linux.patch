@@ -7775,10 +7775,10 @@ index 000000000000..a234788e9990
 +#endif
 diff --git a/drivers/ps5/mp1.c b/drivers/ps5/mp1.c
 new file mode 100644
-index 000000000000..3bd1375a444c
+index 000000000000..57df65e28734
 --- /dev/null
 +++ b/drivers/ps5/mp1.c
-@@ -0,0 +1,490 @@
+@@ -0,0 +1,523 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +
 +#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -7786,9 +7786,13 @@ index 000000000000..3bd1375a444c
 +#include <linux/module.h>
 +#include <linux/miscdevice.h>
 +#include <linux/delay.h>
++#include <linux/mutex.h>
 +#include <linux/smp.h>
 +#include <linux/ps5.h>
 +#include <asm/amd/node.h>
++
++DEFINE_MUTEX(ps5_mp1_q0_lock);
++EXPORT_SYMBOL_GPL(ps5_mp1_q0_lock);
 +
 +#define MP1_IOC_MAGIC		'M'
 +
@@ -8021,9 +8025,14 @@ index 000000000000..3bd1375a444c
 +
 +static int mp1fw_sendmsg(struct mp1_msg *msg, u8 msgid)
 +{
++	int ret = 0;
++
++	mutex_lock(&ps5_mp1_q0_lock);
++
 +	if (mp1fw_waitmsg(MP1_C2PMSG_90, msgid)) {
 +		pr_err("[MP1ERROR] : %s: Error : busy msgid=0x%X, arg=0x%08X\n", __func__, msgid, msg->arg);
-+		return -EBUSY;
++		ret = -EBUSY;
++		goto out_unlock;
 +	}
 +
 +	pcirc_smn_write(MP1_C2PMSG_90, 0);
@@ -8034,20 +8043,24 @@ index 000000000000..3bd1375a444c
 +
 +	if (mp1fw_waitmsg(MP1_C2PMSG_90, msgid)) {
 +		pr_err("[MP1ERROR] : %s: Error : retry over msgid=0x%X, arg=0x%08X\n", __func__, msgid, msg->arg);
-+		return -EBUSY;
++		ret = -EBUSY;
++		goto out_unlock;
 +	}
 +
 +	u32 resp = pcirc_smn_read(MP1_C2PMSG_90);
 +	u32 resp_val = pcirc_smn_read(MP1_C2PMSG_82);
 +	if (resp != 1) {
 +		pr_err("[MP1ERROR] : %s: invalid response msgid=0x%X, resp=0x%08X\n", __func__, msgid, resp);
-+		return -EINVAL;
++		ret = -EINVAL;
++		goto out_unlock;
 +	}
 +
 +	msg->resp = resp;
 +	msg->resp_val = resp_val;
 +
-+	return 0;
++out_unlock:
++	mutex_unlock(&ps5_mp1_q0_lock);
++	return ret;
 +}
 +
 +static int mp1fw_test_sendmsg(struct mp1_msg *msg, uint8_t msgid)
@@ -8139,6 +8152,26 @@ index 000000000000..3bd1375a444c
 +	struct mp1_msg msg = {};
 +	return mp1fw_sendmsg(&msg, PPSMC_MSG_UniversalModeExit);
 +}
++
++int mp1_boost_enter(u32 cpu_mhz_min, u32 cpu_mhz_max, u32 gpu_mhz_min, u32 gpu_mhz_max)
++{
++	u32 params[5];
++
++	params[0] = 0x0;
++	params[1] = 0x449cd;
++	params[2] = (gpu_mhz_min << 16) | cpu_mhz_min;
++	params[3] = (gpu_mhz_max << 16) | cpu_mhz_max;
++	params[4] = 0x25c6a3c8;
++
++	return mp1_universal_mode_enter(params);
++}
++EXPORT_SYMBOL_GPL(mp1_boost_enter);
++
++int mp1_boost_exit(void)
++{
++	return mp1_universal_mode_exit();
++}
++EXPORT_SYMBOL_GPL(mp1_boost_exit);
 +
 +static int mp1_bapm_set_gfx_cacw(int index, int weight)
 +{
@@ -10583,10 +10616,10 @@ index c8700e6a694d..7d0afd378c4e 100644
  extern void dmi_setup(void);
 diff --git a/include/linux/ps5.h b/include/linux/ps5.h
 new file mode 100644
-index 000000000000..75a2d6dace5d
+index 000000000000..80ddf7b0c67a
 --- /dev/null
 +++ b/include/linux/ps5.h
-@@ -0,0 +1,97 @@
+@@ -0,0 +1,101 @@
 +/* SPDX-License-Identifier: GPL-2.0-only */
 +
 +#ifndef _LINUX_PS5_H
@@ -10680,6 +10713,10 @@ index 000000000000..75a2d6dace5d
 +
 +void mp1_set_pm1_addr(u64 addr);
 +int mp1_set_sleep_entry(void);
++int mp1_boost_enter(u32 cpu_mhz_min, u32 cpu_mhz_max, u32 gpu_mhz_min, u32 gpu_mhz_max);
++int mp1_boost_exit(void);
++
++extern struct mutex ps5_mp1_q0_lock;
 +
 +u64 svm_execute_guest(void *guest_func, u64 a0, u64 a1, u64 a2, u64 a3);
 +
