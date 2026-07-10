@@ -1219,7 +1219,7 @@ new file mode 100644
 index 000000000000..95b2c095b53c
 --- /dev/null
 +++ b/drivers/cpufreq/ps5-cpufreq.c
-@@ -0,0 +1,159 @@
+@@ -0,0 +1,157 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +
 +#include <linux/bitfield.h>
@@ -1332,8 +1332,6 @@ index 000000000000..95b2c095b53c
 +{
 +	u32 pstate = ps5_freq_table[index].driver_data;
 +	u32 arg;
-+
-+	pr_info("cpu freq set: %u MHz\n", ps5_freq_table[index].frequency / 1000);
 +
 +	if (pstate == 0xff)
 +		return mp1_boost_enter(PS5_CPU_MHZ_FLOOR, PS5_CPU_MHZ_CEIL,
